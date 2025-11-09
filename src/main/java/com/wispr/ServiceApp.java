@@ -36,7 +36,7 @@ public final class ServiceApp {
       return;
     }
 
-    // === Java 8 友善讀法，取代 readAllBytes() ===
+    // Java 8 讀取 body
     InputStream is = ex.getRequestBody();
     ByteArrayOutputStream bos = new ByteArrayOutputStream();
     byte[] buf = new byte[8192];
@@ -46,8 +46,19 @@ public final class ServiceApp {
 
     Map<String,Object> in = GSON.fromJson(body, MAP_TYPE);
 
-    String action01     = getStr(in, "action01");
-    String rowDataJson  = getStr(in, "rowDataJson");
+    // 允許 action01: "1,0,1" / "[1,0,1]" / "101" / 含空白換行
+    String action01 = normalizeAction01(getStr(in, "action01"));
+    if (action01 == null) {
+      respond(ex, 400, "application/json", "{\"error\":\"missing or invalid action01 (expect 0/1 string; commas/brackets allowed)\"}");
+      return;
+    }
+
+    // 允許 rowDataJson: 字串化 JSON 陣列 或 直接給陣列/物件
+    String rowDataJson = normalizeRowDataJson(in.get("rowDataJson"));
+    if (rowDataJson == null || rowDataJson.trim().isEmpty()) {
+      respond(ex, 400, "application/json", "{\"error\":\"missing rowDataJson\"}");
+      return;
+    }
 
     Integer binSizeSec  = getInt(in, "binSizeSec");
     Integer preSec      = getInt(in, "preSec");
@@ -79,6 +90,7 @@ public final class ServiceApp {
     respond(ex, 200, "application/json", out);
   }
 
+  // —— utils ——
   private static String getStr(Map<String,Object> m, String k) {
     Object v = m.get(k); return v==null? null : String.valueOf(v);
   }
@@ -89,6 +101,23 @@ public final class ServiceApp {
   private static Double getDbl(Map<String,Object> m, String k) {
     Object v = m.get(k); if (v==null) return null;
     return (v instanceof Number)? ((Number)v).doubleValue() : Double.valueOf(String.valueOf(v));
+  }
+
+  // 接受 "1,0,1" / "[1,0,1]" / "1 0 1" / "101" → 標準化成 "101"
+  private static String normalizeAction01(String s) {
+    if (s == null) return null;
+    s = s.replaceAll("\\s+", "");             // 去空白
+    s = s.replace("[", "").replace("]", "");  // 去中括號
+    s = s.replace(",", "");                   // 去逗號
+    if (s.isEmpty() || !s.matches("[01]+")) return null;
+    return s;
+  }
+
+  // 若傳的是字串就原樣回傳；若傳的是陣列/物件就序列化成字串
+  private static String normalizeRowDataJson(Object v) {
+    if (v == null) return null;
+    if (v instanceof String) return (String) v;
+    try { return GSON.toJson(v); } catch (Exception e) { return null; }
   }
 
   private static void respond(HttpExchange ex, int code, String ctype, String body) throws IOException {
