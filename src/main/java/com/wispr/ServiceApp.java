@@ -2,10 +2,12 @@ package com.wispr;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
-import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 
-import java.io.*;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Type;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -26,104 +28,114 @@ public final class ServiceApp {
     System.out.println("Server started on port " + port);
   }
 
-  private static void handleHealth(HttpExchange ex) throws IOException {
+  private static void handleHealth(HttpExchange ex) {
     respond(ex, 200, "text/plain", "OK");
   }
 
-  private static void handleRun(HttpExchange ex) throws IOException {
-    if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-      respond(ex, 405, "text/plain", "Method Not Allowed");
-      return;
-    }
-
-    // Java 8 讀取 body
-    InputStream is = ex.getRequestBody();
-    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-    byte[] buf = new byte[8192];
-    int n;
-    while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
-    String body = new String(bos.toByteArray(), StandardCharsets.UTF_8);
-
-    Map<String,Object> in = GSON.fromJson(body, MAP_TYPE);
-
-    // 允許 action01: "1,0,1" / "[1,0,1]" / "101" / 含空白換行
-    String action01 = normalizeAction01(getStr(in, "action01"));
-    if (action01 == null) {
-      respond(ex, 400, "application/json", "{\"error\":\"missing or invalid action01 (expect 0/1 string; commas/brackets allowed)\"}");
-      return;
-    }
-
-    // 允許 rowDataJson: 字串化 JSON 陣列 或 直接給陣列/物件
-    String rowDataJson = normalizeRowDataJson(in.get("rowDataJson"));
-    if (rowDataJson == null || rowDataJson.trim().isEmpty()) {
-      respond(ex, 400, "application/json", "{\"error\":\"missing rowDataJson\"}");
-      return;
-    }
-
-    Integer binSizeSec  = getInt(in, "binSizeSec");
-    Integer preSec      = getInt(in, "preSec");
-    Integer actSec      = getInt(in, "actSec");
-    Integer postSec     = getInt(in, "postSec");
-    Integer startPad    = getInt(in, "startPaddingSplitSec");
-    Integer shift       = getInt(in, "testTimeShiftSec");
-    Integer endPad      = getInt(in, "endPaddingSec");
-    Integer manualNo    = getInt(in, "manualNoActPeriodSec");
-    Integer maxLag      = getInt(in, "maxLag");
-    Double  minP        = getDbl(in, "minPThreshold");
-    Integer minSpikes   = getInt(in, "minRequiredSpikes");
-    Integer patience    = getInt(in, "earlyStopPatience");
-    Integer defInterval = getInt(in, "defaultIntervalSec");
-    Integer defNumActs  = getInt(in, "defaultNumActions");
-
-    String out;
+  // 「傳什麼就做什麼」：A、B 必須是字串；其餘欄位如實傳入，未提供或提供 null 就是 null。
+  private static void handleRun(HttpExchange ex) {
     try {
-      out = AlgorithumTwoService.runAlgorithmFromJson(
-          action01, rowDataJson,
-          binSizeSec, preSec, actSec, postSec,
-          startPad, shift, endPad, manualNo,
-          maxLag, minP, minSpikes, patience,
-          defInterval, defNumActs
+      if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
+        respond(ex, 405, "text/plain", "Method Not Allowed");
+        return;
+      }
+
+      String body = readBody(ex);
+      Map<String,Object> in = GSON.fromJson(body, MAP_TYPE);
+      if (in == null) {
+        respond(ex, 400, "application/json","{\"error\":\"invalid json\"}");
+        return;
+      }
+
+      Object aObj = in.get("A");
+      Object bObj = in.get("B");
+      if (!(aObj instanceof String) || !(bObj instanceof String)) {
+        respond(ex, 400, "application/json","{\"error\":\"A and B must be strings\"}");
+        return;
+      }
+      String A = (String) aObj; // actionSignalString
+      String B = (String) bObj; // rowDataJson string
+
+      // 其他參數：若請求有給且可轉就轉；沒給或為 null 就傳 null
+      Integer binSizeSec           = toInt(in.get("binSizeSec"));
+      Integer preSec               = toInt(in.get("preSec"));
+      Integer actSec               = toInt(in.get("actSec"));
+      Integer postSec              = toInt(in.get("postSec"));
+      Integer startPaddingSplitSec = toInt(in.get("startPaddingSplitSec"));
+      Integer testTimeShiftSec     = toInt(in.get("testTimeShiftSec"));
+      Integer endPaddingSec        = toInt(in.get("endPaddingSec"));
+      Integer manualNoActPeriodSec = toInt(in.get("manualNoActPeriodSec"));
+      Integer maxLag               = toInt(in.get("maxLag"));
+      Double  minPThreshold        = toDbl(in.get("minPThreshold"));
+      Integer minRequiredSpikes    = toInt(in.get("minRequiredSpikes"));
+      Integer earlyStopPatience    = toInt(in.get("earlyStopPatience"));
+      Integer defaultIntervalSec   = toInt(in.get("defaultIntervalSec"));
+      Integer defaultNumActions    = toInt(in.get("defaultNumActions"));
+
+      String out = AlgorithumTwoService.runAlgorithmFromJson(
+          A, B,
+          binSizeSec,
+          preSec,
+          actSec,
+          postSec,
+          startPaddingSplitSec,
+          testTimeShiftSec,
+          endPaddingSec,
+          manualNoActPeriodSec,
+          maxLag,
+          minPThreshold,
+          minRequiredSpikes,
+          earlyStopPatience,
+          defaultIntervalSec,
+          defaultNumActions
       );
+
+      respond(ex, 200, "application/json", out);
     } catch (Exception e) {
-      out = "{\"error\":\"" + e.toString().replace("\"","'") + "\"}";
+      respond(ex, 500, "application/json",
+          "{\"error\":\"" + e.toString().replace("\"","'") + "\"}");
     }
-    respond(ex, 200, "application/json", out);
   }
 
-  // —— utils ——
-  private static String getStr(Map<String,Object> m, String k) {
-    Object v = m.get(k); return v==null? null : String.valueOf(v);
-  }
-  private static Integer getInt(Map<String,Object> m, String k) {
-    Object v = m.get(k); if (v==null) return null;
-    return (v instanceof Number)? ((Number)v).intValue() : Integer.valueOf(String.valueOf(v));
-  }
-  private static Double getDbl(Map<String,Object> m, String k) {
-    Object v = m.get(k); if (v==null) return null;
-    return (v instanceof Number)? ((Number)v).doubleValue() : Double.valueOf(String.valueOf(v));
-  }
-
-  // 接受 "1,0,1" / "[1,0,1]" / "1 0 1" / "101" → 標準化成 "101"
-  private static String normalizeAction01(String s) {
-    if (s == null) return null;
-    s = s.replaceAll("\\s+", "");             // 去空白
-    s = s.replace("[", "").replace("]", "");  // 去中括號
-    s = s.replace(",", "");                   // 去逗號
-    if (s.isEmpty() || !s.matches("[01]+")) return null;
-    return s;
-  }
-
-  // 若傳的是字串就原樣回傳；若傳的是陣列/物件就序列化成字串
-  private static String normalizeRowDataJson(Object v) {
+  // —— minimal helpers ——
+  private static Integer toInt(Object v) {
     if (v == null) return null;
-    if (v instanceof String) return (String) v;
-    try { return GSON.toJson(v); } catch (Exception e) { return null; }
+    if (v instanceof Number) return ((Number)v).intValue();
+    if (v instanceof String) {
+      String s = ((String)v).trim();
+      if (s.isEmpty() || s.equalsIgnoreCase("null")) return null;
+      try { return Integer.valueOf(s); } catch (Exception ignore) { return null; }
+    }
+    return null;
   }
 
-  private static void respond(HttpExchange ex, int code, String ctype, String body) throws IOException {
-    byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-    ex.getResponseHeaders().set("Content-Type", ctype + "; charset=utf-8");
-    ex.sendResponseHeaders(code, bytes.length);
-    try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+  private static Double toDbl(Object v) {
+    if (v == null) return null;
+    if (v instanceof Number) return ((Number)v).doubleValue();
+    if (v instanceof String) {
+      String s = ((String)v).trim();
+      if (s.isEmpty() || s.equalsIgnoreCase("null")) return null;
+      try { return Double.valueOf(s); } catch (Exception ignore) { return null; }
+    }
+    return null;
+  }
+
+  private static String readBody(HttpExchange ex) throws Exception {
+    try (InputStream is = ex.getRequestBody();
+         ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+      byte[] buf = new byte[8192];
+      int n;
+      while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+      return new String(bos.toByteArray(), StandardCharsets.UTF_8);
+    }
+  }
+
+  private static void respond(HttpExchange ex, int code, String ctype, String body) {
+    try {
+      byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+      ex.getResponseHeaders().set("Content-Type", ctype + "; charset=utf-8");
+      ex.sendResponseHeaders(code, bytes.length);
+      try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+    } catch (Exception ignore) {}
   }
 }
