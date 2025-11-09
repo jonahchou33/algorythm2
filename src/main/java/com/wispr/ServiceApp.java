@@ -32,7 +32,7 @@ public final class ServiceApp {
     respond(ex, 200, "text/plain", "OK");
   }
 
-  // 「傳什麼就做什麼」：A、B 必須是字串；其餘欄位如實傳入，未提供或提供 null 就是 null。
+  // 僅轉送：actionSignalStr、rowDataJson 必須是字串；其餘如實傳遞（可為 null）
   private static void handleRun(HttpExchange ex) {
     try {
       if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
@@ -47,16 +47,17 @@ public final class ServiceApp {
         return;
       }
 
-      Object aObj = in.get("A");
-      Object bObj = in.get("B");
+      // 這裡改成讀新鍵名
+      Object aObj = in.get("actionSignalStr");
+      Object bObj = in.get("rowDataJson");
       if (!(aObj instanceof String) || !(bObj instanceof String)) {
-        respond(ex, 400, "application/json","{\"error\":\"A and B must be strings\"}");
+        respond(ex, 400, "application/json","{\"error\":\"actionSignalStr and rowDataJson must be strings\"}");
         return;
       }
-      String A = (String) aObj; // actionSignalString
-      String B = (String) bObj; // rowDataJson string
+      String actionSignalStr = (String) aObj;
+      String rowDataJson     = (String) bObj;
 
-      // 其他參數：若請求有給且可轉就轉；沒給或為 null 就傳 null
+      // 其他參數：有給且可轉就轉；沒給或字串"null"→null
       Integer binSizeSec           = toInt(in.get("binSizeSec"));
       Integer preSec               = toInt(in.get("preSec"));
       Integer actSec               = toInt(in.get("actSec"));
@@ -73,21 +74,11 @@ public final class ServiceApp {
       Integer defaultNumActions    = toInt(in.get("defaultNumActions"));
 
       String out = AlgorithumTwoService.runAlgorithmFromJson(
-          A, B,
-          binSizeSec,
-          preSec,
-          actSec,
-          postSec,
-          startPaddingSplitSec,
-          testTimeShiftSec,
-          endPaddingSec,
-          manualNoActPeriodSec,
-          maxLag,
-          minPThreshold,
-          minRequiredSpikes,
-          earlyStopPatience,
-          defaultIntervalSec,
-          defaultNumActions
+          actionSignalStr, rowDataJson,
+          binSizeSec, preSec, actSec, postSec,
+          startPaddingSplitSec, testTimeShiftSec, endPaddingSec, manualNoActPeriodSec,
+          maxLag, minPThreshold, minRequiredSpikes, earlyStopPatience,
+          defaultIntervalSec, defaultNumActions
       );
 
       respond(ex, 200, "application/json", out);
